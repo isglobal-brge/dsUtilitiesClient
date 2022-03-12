@@ -44,10 +44,11 @@ ds.aov <- function(formula=NULL, data=NULL, type = "split", datasources = NULL){
     levels <- ds.levels(x = paste0(data, "$", var), datasources = datasources[i])
     group.means.study <- list()
     sum.sq.errors.study <- 0
+
     for (lvl in levels[[1]]$Levels) {
+      # Subsetting
       ds.make(paste0(data, "$", var, "==", "'", lvl, "'"), "bools")
       ds.asNumeric("bools", "bools_to_ones")
-
       ds.dataFrameSubset(
         df.name = data,
         newobj = "subtable",
@@ -57,9 +58,12 @@ ds.aov <- function(formula=NULL, data=NULL, type = "split", datasources = NULL){
         keep.NAs = FALSE,
         datasources = datasources[i]
       )
+
+      # Get means
       group.means.study[[lvl]] <- ds.mean(x = paste0("subtable$", pred), datasources = datasources[i])$Mean.by.Study
       overall.means[[i]] <- ds.mean(x = paste0(data, "$", pred), datasources = datasources[i])$Mean.by.Study
 
+      # Get sum of errors suared - easiest with ds.mean on errors then multiply by n
       ds.make(paste0("(subtable$", pred, "-", group.means.study[[lvl]][1],")^2"), "squared.diffs", datasources = datasources[i])
       temp <- ds.mean(x = "squared.diffs", datasources = datasources[i])$Mean.by.Study
       sum.sq.errors.study <- sum.sq.errors.study + temp[1] * temp[3]
@@ -69,8 +73,8 @@ ds.aov <- function(formula=NULL, data=NULL, type = "split", datasources = NULL){
   }
 
 
+  metrics.study <- list()
   if (type == "split"){
-    metrics.study <- list()
     for (i in 1:length(datasources)){
       group.means.study <- group.means[[i]]
       SSE <- sum.sq.errors[[i]]
@@ -82,7 +86,7 @@ ds.aov <- function(formula=NULL, data=NULL, type = "split", datasources = NULL){
 
       df <- length(group.means.study) - 1
       error.df <- temp[3] - length(group.means.study)
-      explained.SSE <- SSE.H0 - sum.sq.errors[[i]]
+      explained.SSE <- SSE.H0 - SSE
 
       explained.MSE <- explained.SSE / df
       MSE <- SSE / error.df
@@ -97,7 +101,65 @@ ds.aov <- function(formula=NULL, data=NULL, type = "split", datasources = NULL){
 
       metrics.study[[i]] <- metrics
     }
+  } else if (type == "combined") {
+
+    levels <- ds.levels(x = paste0(data, "$", var), datasources = datasources)
+    SSE <- 0
+
+    for (lvl in levels[[i]]$Levels) {
+      combined.group.count <- 0
+      combined.group.means <- 0
+      for (i in 1:length(datasources)){
+        combined.group.count <- combined.group.count + group.means[[i]][[lvl]][3]
+        combined.group.means <- combined.group.means + group.means[[i]][[lvl]][1] * group.means[[i]][[lvl]][3]
+      }
+      combined.group.means <- combined.group.means / combined.group.count
+
+      for (i in 1:length(datasources)){
+        # Subsetting
+        ds.make(paste0(data, "$", var, "==", "'", lvl, "'"), "bools")
+        ds.asNumeric("bools", "bools_to_ones")
+        ds.dataFrameSubset(
+          df.name = data,
+          newobj = "subtable",
+          V1.name = "bools_to_ones",
+          V2.name = "1",
+          Boolean.operator = "==",
+          keep.NAs = FALSE,
+          datasources = datasources[i]
+        )
+        ds.make(paste0("(subtable$", pred, "-", combined.group.means,")^2"), "squared.diffs", datasources = datasources[i])
+        temp <- ds.mean(x = "squared.diffs", datasources = datasources[i])$Mean.by.Study
+        SSE <- SSE + temp[1] * temp[3]
+      }
+
+    }
+
+    combined.overall.means <- ds.mean(x = paste0(data, "$", pred), type = "combined", datasources = datasources)$Global.Mean[1]
+
+    # SSE H0
+    ds.make(paste0("(", data, "$", pred, "-", combined.overall.means,")^2"), "squared.diffs", datasources = datasources)
+    temp <- ds.mean(x = "squared.diffs", datasources = datasources)$Mean.by.Study
+    SSE.H0 <- sum(temp[,1] * temp[,3])
+
+    df <- length(group.means.study) - 1
+    error.df <- sum(temp[,3]) - length(group.means.study)
+    explained.SSE <- SSE.H0 - SSE
+
+    explained.MSE <- explained.SSE / df
+    MSE <- SSE / error.df
+    F.val <- explained.MSE / MSE
+
+    metrics <- data.frame(Df = c(df, error.df))
+    metrics$'Sum Sq' <- c(explained.SSE, SSE)
+    metrics$'Mean Sq' <- c(explained.MSE, MSE)
+    metrics$'F value' <- c(F.val, NA)
+    metrics$'Pr(>F)' <- c(pf(F.val, df, error.df, lower.tail = FALSE), NA)
+    rownames(metrics) <- c(var, "Residuals")
+
+    metrics.study[[1]] <- metrics
+
   }
 
-
+  return (metrics.study)
 }
